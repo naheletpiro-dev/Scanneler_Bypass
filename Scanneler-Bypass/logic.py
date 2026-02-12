@@ -14,7 +14,7 @@ from datetime import datetime
 # ==========================================================
 # CONFIGURACIÓN DE TU API EN RENDER
 # ==========================================================
-API_BASE_URL = "https://scanneler-api.onrender.com"
+API_BASE_URL = "https://api-bypass-e6ty.onrender.com"
 
 def get_hwid():
     """Genera el identificador único de hardware."""
@@ -33,18 +33,25 @@ def db_validate_login(username, password_input):
     """
     IMPORTANTE: Tu API usa OAuth2PasswordRequestForm.
     Debemos enviar los datos como FORMULARIO (data=), no como JSON.
+    Se añade el Header x-hwid para vinculación de hardware.
     """
     try:
+        hwid = get_hwid()
         # FastAPI espera 'username' y 'password' en Form Data
         payload = {
             "username": str(username).strip(),
             "password": str(password_input).strip()
         }
         
-        # Al usar data=, requests envía el Header 'application/x-www-form-urlencoded'
+        # Enviamos el HWID como Header para que la API lo valide/registre
+        headers = {
+            "x-hwid": str(hwid)
+        }
+        
         response = requests.post(
             f"{API_BASE_URL}/login", 
             data=payload, 
+            headers=headers,
             timeout=25
         )
         
@@ -71,14 +78,16 @@ def db_redeem_key(username, key_string, password):
         payload = {
             "key_code": str(key_string).strip(),
             "username": str(username).strip(),
-            "password": str(password).strip(),
-            "hwid": hwid
+            "password": str(password).strip()
         }
         
-        # El registro en tu API sí espera un JSON plano
+        # Registramos con el HWID en los Headers para vincular desde el registro
+        headers = {"x-hwid": str(hwid)}
+        
         response = requests.post(
             f"{API_BASE_URL}/keys/redeem", 
             json=payload, 
+            headers=headers,
             timeout=25
         )
         
@@ -132,7 +141,8 @@ def db_generate_key(membresia="Monthly", amount=1):
 def db_get_all_users():
     """Obtiene la lista de usuarios registrados desde la API."""
     try:
-        response = requests.get(f"{API_BASE_URL}/users", timeout=15)
+        # Endpoint ajustado a la nueva estructura de Admin
+        response = requests.get(f"{API_BASE_URL}/admin/users", timeout=15)
         if response.status_code == 200:
             return response.json()
         return []
@@ -142,7 +152,6 @@ def db_get_all_users():
 def db_reset_hwid(username):
     """
     Solicita a la API resetear el hardware id de un usuario específico.
-    Libera la cuenta para ser usada en otra PC.
     """
     try:
         response = requests.put(
@@ -469,7 +478,7 @@ def limpiar_usn_journal(logger_func):
     logger_func("→ NTFS USN Journal wiped.")
 
 def limpiar_temps_profundo(logger_func):
-    for r in [os.expandvars(r'%temp%'), r'C:\Windows\Temp']:
+    for r in [os.path.expandvars(r'%temp%'), r'C:\Windows\Temp']:
         shutil.rmtree(r, ignore_errors=True)
     logger_func("→ System temp caches neutralized.")
 

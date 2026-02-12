@@ -15,15 +15,6 @@ try:
 except:
     pass
 
-# --- VERIFICACIÓN DE LOGIC ---
-try:
-    import logic
-except Exception as e:
-    root = ctk.CTk()
-    root.withdraw()
-    messagebox.showerror("Logic Error", f"Fatal error in logic.py: {e}")
-    sys.exit()
-
 # ==========================================================
 # SISTEMA DE AUTO-ELEVACIÓN
 # ==========================================================
@@ -65,9 +56,7 @@ class ScannelerBypass(ctk.CTk):
         self.container = ctk.CTkFrame(self, fg_color="transparent")
         self.container.pack(fill="both", expand=True)
 
-        # Diccionario para gestionar los paneles (Frames)
         self.frames = {}
-        
         for F in (LoginFrame, InicioFrame, BypassFrame, AdminFrame):
             frame = F(self.container, self)
             self.frames[F] = frame
@@ -76,7 +65,7 @@ class ScannelerBypass(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
         
-        # --- PANTALLA DE SPLASH (CON LOGO RESTAURADO) ---
+        # --- PANTALLA DE SPLASH ---
         self.splash_screen = ctk.CTkFrame(self, fg_color=BG_DARK)
         self.splash_screen.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.setup_splash_screen()
@@ -105,7 +94,6 @@ class ScannelerBypass(ctk.CTk):
         except: pass
 
     def setup_splash_screen(self):
-        # CARGA DE LOGO RESTAURADA
         try:
             if os.path.exists("Scanneler.png"):
                 logo_raw = Image.open("Scanneler.png")
@@ -136,7 +124,7 @@ class ScannelerBypass(ctk.CTk):
         frame.tkraise()
 
 # ==========================================================
-# CLASE: LOGIN (CON REDEEM KEY RESTAURADO)
+# CLASE: LOGIN
 # ==========================================================
 class LoginFrame(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -159,22 +147,20 @@ class LoginFrame(ctk.CTkFrame):
         self.lbl_status.pack(pady=5)
 
         ctk.CTkButton(self.login_content, text="LOGIN SYSTEM", font=("Inter", 14, "bold"), fg_color=VIOLETA_NEON, hover_color=MAGENTA_GLOW, height=45, width=320, command=self.handle_auth).pack(pady=(20, 10))
-
-        # BOTÓN REDEEM RESTAURADO
         ctk.CTkButton(self.login_content, text="REDEEM & BIND HWID", font=("Inter", 12), fg_color="transparent", text_color="gray", border_width=1, border_color="#1F1F23", height=35, width=320, command=self.open_redeem_window).pack(pady=5)
 
     def handle_auth(self):
-        u, p = self.entry_user.get(), self.entry_pass.get()
+        u, p = self.entry_user.get().strip(), self.entry_pass.get().strip()
         if not u or not p: return
 
         self.lbl_status.configure(text="AUTHENTICATING...", text_color=VIOLETA_NEON)
         self.update()
         
+        # El logic.py actualizado ya maneja el envío del x-hwid en los headers
         result = logic.db_validate_login(u, p)
         if isinstance(result, (list, tuple)) and result[0]:
             role = str(result[2]).lower()
-            # Compatible con admin y super_admin
-            if "admin" in role:
+            if role in ["admin", "super_admin"]:
                 self.controller.frames[InicioFrame].btn_admin.pack(pady=10)
             self.controller.show_frame(InicioFrame)
         else:
@@ -207,7 +193,8 @@ class LoginFrame(ctk.CTkFrame):
             if p_val.get() != cp_val.get():
                 lbl_err.configure(text="PASSWORDS DO NOT MATCH")
                 return
-            success, msg = logic.db_redeem_key(u_val.get(), k_val.get(), p_val.get())
+            # El logic.py actualizado ya incluye el hwid en el payload del redeem
+            success, msg = logic.db_redeem_key(u_val.get().strip(), k_val.get().strip(), p_val.get().strip())
             if success:
                 messagebox.showinfo("Success", "Account activated!")
                 redeem_win.destroy()
@@ -229,11 +216,10 @@ class InicioFrame(ctk.CTkFrame):
         ctk.CTkLabel(self, text="B Y P A S S   P R O T O C O L", font=("Inter", 15, "bold"), text_color="#4B5563").pack(pady=(0, 60))
         
         ctk.CTkButton(self, text="INITIALIZE CORE", font=("Inter", 16, "bold"), fg_color=VIOLETA_NEON, hover_color=MAGENTA_GLOW, width=300, height=60, command=lambda: controller.show_frame(BypassFrame)).pack(pady=20)
-        
         self.btn_admin = ctk.CTkButton(self, text="🛡️ ADMIN PANEL", font=("Inter", 14, "bold"), fg_color="#1F1F23", border_width=1, border_color=MAGENTA_GLOW, width=300, height=45, command=lambda: controller.show_frame(AdminFrame))
 
 # ==========================================================
-# CLASE: ADMIN (CON RESET HWID Y MEMBRESÍAS)
+# CLASE: ADMIN
 # ==========================================================
 class AdminFrame(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -290,35 +276,41 @@ class AdminFrame(ctk.CTkFrame):
         users = logic.db_get_all_users()
         if isinstance(users, list):
             for u in users:
-                hwid_status = "LOCKED" if u.get('hwid') != 'NONE' else "FREE"
-                self.user_box.insert("end", f"▶ USER: {u.get('username')} | PLAN: {u.get('membresia')} | HWID: {hwid_status}\n")
+                hwid_val = u.get('hwid', 'NONE')
+                hwid_status = "LOCKED" if hwid_val != 'NONE' else "FREE"
+                self.user_box.insert("end", f"▶ USER: {u.get('username','?')} | PLAN: {u.get('membresia','?')} | HWID: {hwid_status} ({hwid_val[:8]}...)\n")
         else:
-            self.user_box.insert("end", "Error de conexión.")
+            self.user_box.insert("end", "Error: No se pudo obtener la lista de usuarios.")
 
     def handle_hwid_reset(self):
-        dialog = ctk.CTkInputDialog(text="Username a resetear:", title="HWID Reset")
+        dialog = ctk.CTkInputDialog(text="Ingrese el Username a liberar:", title="HWID Reset Tool")
         target = dialog.get_input()
         if target:
+            target = target.strip()
             success, msg = logic.db_reset_hwid(target)
-            if success: messagebox.showinfo("Éxito", msg); self.refresh_users()
-            else: messagebox.showerror("Error", msg)
+            if success: 
+                messagebox.showinfo("Éxito", msg)
+                self.refresh_users()
+            else: 
+                messagebox.showerror("Error", msg)
 
     def run_generation(self):
         tipo = self.memb_var.get()
         try:
             cant = int(self.amount_var.get())
+            if cant <= 0: raise ValueError
         except:
-            messagebox.showerror("Error", "Cantidad inválida")
+            messagebox.showerror("Error", "Ingrese una cantidad válida")
             return
 
         success, keys = logic.db_generate_key(membresia=tipo, amount=cant)
         if success:
             self.key_output.delete("0.0", "end")
-            self.key_output.insert("end", f"--- {tipo.upper()} KEYS ---\n")
+            self.key_output.insert("end", f"--- {tipo.upper()} LICENSES GENERATED ---\n")
             for k in keys: self.key_output.insert("end", f"{k}\n")
-            messagebox.showinfo("Admin", f"Generadas {cant} llaves")
+            messagebox.showinfo("Admin", f"Generadas {cant} llaves correctamente")
         else:
-            messagebox.showerror("Error", "API Error")
+            messagebox.showerror("Error", "Fallo crítico en la API de Render")
 
 # ==========================================================
 # CLASE: BYPASS
@@ -331,9 +323,9 @@ class BypassFrame(ctk.CTkFrame):
         self.panel = ctk.CTkFrame(self, fg_color="#0D0D12", corner_radius=25, border_width=1, border_color="#1F1F23")
         self.panel.pack(padx=60, pady=60, fill="both", expand=True)
 
-        ctk.CTkButton(self.panel, text="← BACK", fg_color="transparent", command=lambda: controller.show_frame(InicioFrame)).pack(anchor="nw", padx=20, pady=20)
+        ctk.CTkButton(self.panel, text="← BACK", fg_color="transparent", text_color="gray", command=lambda: controller.show_frame(InicioFrame)).pack(anchor="nw", padx=20, pady=20)
         
-        self.btn_sel = ctk.CTkButton(self.panel, text="TARGET_BIN", fg_color="#1A1A1F", border_width=1, border_color=VIOLETA_NEON, command=self.handle_select)
+        self.btn_sel = ctk.CTkButton(self.panel, text="SELECT TARGET BINARY", fg_color="#1A1A1F", border_width=1, border_color=VIOLETA_NEON, command=self.handle_select)
         self.btn_sel.pack(pady=10)
         
         self.txt_console = ctk.CTkTextbox(self.panel, height=250, fg_color="#050507", text_color=VIOLETA_NEON, font=("Consolas", 12))
@@ -343,25 +335,49 @@ class BypassFrame(ctk.CTkFrame):
         self.progress.set(0)
         self.progress.pack(pady=10)
 
-        self.btn_exe = ctk.CTkButton(self.panel, text="EXECUTE BYPASS", fg_color=VIOLETA_NEON, font=("Inter", 18, "bold"), height=55, command=self.handle_wipe)
+        self.btn_exe = ctk.CTkButton(self.panel, text="EXECUTE DEEP BYPASS", fg_color=VIOLETA_NEON, font=("Inter", 18, "bold"), height=55, command=self.handle_wipe)
         self.btn_exe.pack(pady=10)
+
+    def log(self, message):
+        self.txt_console.insert("end", f"[!] {message}\n")
+        self.txt_console.see("end")
+        self.update()
 
     def handle_select(self):
         path = filedialog.askopenfilename()
         if path:
             self.controller.ruta_seleccionada = os.path.normpath(path)
-            self.txt_console.insert("end", f"[!] Target: {os.path.basename(path)}\n")
+            self.log(f"Target Acquired: {os.path.basename(path)}")
 
     def handle_wipe(self):
         if not self.controller.ruta_seleccionada:
-            messagebox.showwarning("System", "Select target.")
+            messagebox.showwarning("System", "Please select a target binary first.")
             return
+        
         self.btn_exe.configure(state="disabled")
-        fases = [(0.25, "Neutralizing Registry", lambda: logic.limpiar_shimcache(print)), (1.0, "Complete", lambda: logic.restore_system_time(print))]
+        self.txt_console.delete("0.0", "end")
+        self.log("INITIALIZING CORE PURGE...")
+        
+        # Secuencia de limpieza real conectada a logic.py
+        fases = [
+            (0.15, "Neutralizing Registry ShimCache", lambda: logic.limpiar_shimcache(self.log)),
+            (0.30, "Sanitizing MUICache Traces", lambda: logic.limpiar_muicache(self.controller.ruta_seleccionada, self.log)),
+            (0.45, "Neutralizing BAM Records", lambda: logic.limpiar_bam(self.log)),
+            (0.60, "Wiping USN Journal", lambda: logic.limpiar_usn_journal(self.log)),
+            (0.80, "Obfuscating MFT Filename", lambda: logic.renombrar_y_borrar(self.controller.ruta_seleccionada, self.log)),
+            (1.00, "Kernel Time Resync Complete", lambda: logic.restore_system_time(self.log))
+        ]
+        
         for p, d, f in fases:
-            self.txt_console.insert("end", f"Phase: {d}\n"); f()
-            self.progress.set(p); self.update(); time.sleep(0.3)
+            self.log(f"Phase Start: {d}")
+            f()
+            self.progress.set(p)
+            self.update()
+            time.sleep(0.4)
+            
+        messagebox.showinfo("Bypass", "Deep Purge Complete. Traces neutralized.")
         self.btn_exe.configure(state="normal")
+        self.progress.set(0)
 
 if __name__ == "__main__":
     solicitar_admin()
