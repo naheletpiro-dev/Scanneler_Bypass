@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-psycopg2-binary
-pydantic
-python-jose[cryptography]
-python-multipart
-requests
