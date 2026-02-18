@@ -6,11 +6,13 @@ import ctypes
 import shutil
 import random
 import time
+import sys
 import hashlib
 import requests
 import json
 from datetime import datetime
 import keyboard
+import sqlite3
 
 DEEP_SCAN_ENABLED = False  # Por defecto desactivado para mayor velocidad
 
@@ -363,14 +365,40 @@ def limpiar_clipboard(logger):
         pass
 
 def limpiar_historial_consola(logger):
-    """Borra el rastro de comandos en PowerShell y CMD."""
+    """
+    Borra el rastro de comandos en PowerShell/CMD y elimina los 
+    archivos Prefetch de los ejecutables de sistema (Host Prefetch).
+    """
+    # 1. Limpieza de Historial de PowerShell
     path_ps = os.path.expandvars(r'%AppData%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt')
     try:
         if os.path.exists(path_ps):
             os.remove(path_ps)
             logger("→ PowerShell command history annihilated.")
+        
         # Reinicia los alias de CMD
         subprocess.run("doskey /reinstall", shell=True, capture_output=True)
+    except:
+        pass
+
+    # 2. Integración de Host Prefetch
+    # Borra el rastro de ejecución de las herramientas que Scanneler usa internamente
+    path_pf = os.path.expandvars(r'%SystemRoot%\Prefetch')
+    hosts_limpieza = ["CMD.EXE", "POWERSHELL.EXE", "REG.EXE", "WEVTUTIL.EXE", "FSUTIL.EXE", "SC.EXE"]
+    
+    try:
+        if os.path.exists(path_pf):
+            count = 0
+            for f in os.listdir(path_pf):
+                # Windows guarda los .pf como NOMBRE-HASH.pf
+                if any(h in f.upper() for h in hosts_limpieza):
+                    try:
+                        os.remove(os.path.join(path_pf, f))
+                        count += 1
+                    except:
+                        continue
+            if count > 0:
+                logger(f"→ Host Prefetch: {count} system tool traces purged.")
     except:
         pass
 
@@ -577,17 +605,18 @@ def limpiar_recent_apps_selectivo(ruta_archivo, logger):
     
 def limpiar_appcompat_total(ruta_archivo, logger):
     """
-    Ataque de tres niveles contra AppCompatCache y ShimCache.
+    Versión Quirúrgica: No borra tablas completas. 
+    Elimina rastros por ruta específica y por nombre base en cualquier ubicación.
     """
-    nombre_exe = os.path.basename(ruta_archivo)
+    nombre_exe = os.path.basename(ruta_archivo).lower()
+    nombre_sin_ext = os.path.splitext(nombre_exe)[0]
     target_path = ruta_archivo.lower()
     
     try:
-        # NIVEL 1: Forzar al Kernel a escribir la caché a disco (Flush)
-        # Si no hacemos esto, Windows ignorará los cambios en el registro.
+        # NIVEL 1: Sincronización (Obligatorio para que el Kernel acepte cambios)
         subprocess.run("rundll32.exe apphelp.dll,ShimFlushCache", shell=True)
         
-        # NIVEL 2: Limpiar las claves de registro conocidas
+        # NIVEL 2: Definición de rutas de compatibilidad
         rutas_appcompat = [
             (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache"),
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store"),
@@ -597,33 +626,37 @@ def limpiar_appcompat_total(ruta_archivo, logger):
         for hkey, path in rutas_appcompat:
             try:
                 with winreg.OpenKey(hkey, path, 0, winreg.KEY_ALL_ACCESS) as key:
-                    if "Session Manager" in path:
-                        # El ShimCache es un binario gigante; borrarlo fuerza al sistema a resetearlo
+                    # En todas las claves ahora aplicamos búsqueda por nombre y ruta
+                    num_vals = winreg.QueryInfoKey(key)[1]
+                    for i in range(num_vals - 1, -1, -1):
                         try:
-                            winreg.DeleteValue(key, "AppCompatCache")
-                            logger("→ Kernel ShimCache (AppCompatCache) reset.")
-                        except: pass
-                    else:
-                        # Limpieza quirúrgica de las otras claves
-                        num_vals = winreg.QueryInfoKey(key)[1]
-                        for i in range(num_vals - 1, -1, -1):
-                            val_name = winreg.EnumValue(key, i)[0]
-                            if target_path in val_name.lower() or nombre_exe.lower() in val_name.lower():
+                            val_name, val_data, _ = winreg.EnumValue(key, i)
+                            val_name_lower = val_name.lower()
+                            
+                            # Criterio de eliminación: Ruta exacta O Nombre del archivo en cualquier lado
+                            if (target_path in val_name_lower or 
+                                nombre_exe in val_name_lower or 
+                                nombre_sin_ext in val_name_lower):
+                                
                                 winreg.DeleteValue(key, val_name)
-                                logger(f"→ AppCompat Trace destroyed: {nombre_exe}")
+                                logger(f"→ AppCompat: Surgical trace purged: {os.path.basename(val_name)}")
+                        except: continue
             except: continue
 
-        # NIVEL 3: Limpiar Amcache.hve (Archivo bloqueado por el sistema)
-        # Amcache es el rastro más persistente. Intentamos limpiar su entrada en el registro.
+        # NIVEL 3: Amcache Persisted (Búsqueda por nombre base)
         path_amcache = r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Persisted"
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path_amcache, 0, winreg.KEY_ALL_ACCESS) as key:
-                winreg.DeleteValue(key, target_path)
-                logger("→ Amcache Persisted entry purged.")
+                num_vals = winreg.QueryInfoKey(key)[1]
+                for i in range(num_vals - 1, -1, -1):
+                    val_name = winreg.EnumValue(key, i)[0]
+                    if nombre_sin_ext in val_name.lower():
+                        winreg.DeleteValue(key, val_name)
+                        logger("→ Amcache Persisted: Legacy name trace purged.")
         except: pass
 
     except Exception as e:
-        logger(f"→ AppCompat Error: {e}")
+        logger(f"→ AppCompat Surgical Error: {e}")
         
 def limpiar_amcache_quirurgico(ruta_archivo, logger):
     """
@@ -649,7 +682,8 @@ def limpiar_amcache_quirurgico(ruta_archivo, logger):
                     val_name = winreg.EnumValue(key, i)[0]
                     if target_path in val_name.lower() or nombre_exe in val_name.lower():
                         winreg.DeleteValue(key, val_name)
-                        logger(f"→ Amcache: Surgical removal of {nombre_exe} from {path.split('\\')[-1]}.")
+                        seccion_nombre = path.split('\\')[-1]
+                        logger(f"→ Amcache: Surgical removal of {nombre_exe} from {seccion_nombre}.")
 
                 # 2. Búsqueda por subclaves (InventoryApplicationFile usa IDs aleatorios)
                 num_subkeys = winreg.QueryInfoKey(key)[0]
@@ -699,27 +733,51 @@ def limpiar_task_cache(ruta_archivo, logger):
     
 def camuflar_mft(directorio_archivo, logger):
     """
-    Versión optimizada: Escribe bloques más grandes y usa pausas 
-    para evitar el bloqueo del sistema de archivos.
+    Versión Avanzada: Forzado de sobreescritura de registros MFT y 
+    ofuscación de la línea de tiempo mediante archivos basura con TimeStomp.
     """
     try:
-        # Usamos nombres que parezcan del sistema para no levantar sospechas
-        nombres_fake = ["dt_trace", "setup_log", "win_update_cache", "tmp_proc", "sys_info"]
+        # 1. Nombres que imitan archivos de telemetría y diagnóstico reales de Windows
+        nombres_fake = [
+            "ETW_Trace_Log", "Win_Diag_Data", "Cbs_Persist", "Dism_Host_Provider",
+            "Spp_Svc_Cache", "Appx_Deployment_Log", "Temp_Win_Update"
+        ]
         
-        for i in range(len(nombres_fake)):
-            nombre = f"{nombres_fake[i]}_{random.randint(1000, 9999)}.tmp"
-            fake_path = os.path.join(directorio_archivo, nombre)
+        # 2. Fecha antigua para el TimeStomping de los archivos temporales
+        # Esto evita que aparezca actividad de creación masiva hoy en los logs forenses
+        fecha_antigua = datetime(2018, 9, 24, 11, 45, 0)
+        ft = int((fecha_antigua.timestamp() * 10000000) + 116444736000000000)
+        ft_ctypes = ctypes.c_longlong(ft)
+
+        logger("→ MFT: Initiating Deep Journal Overwrite...")
+
+        # 3. Bucle de presión sobre la MFT
+        # Hacemos 2 ciclos para asegurar que los registros se marquen como libres y se reutilicen
+        for _ in range(2):
+            for i in range(len(nombres_fake)):
+                # Generamos una extensión variada (.log, .tmp, .dat)
+                ext = random.choice([".log", ".tmp", ".dat", ".cache"])
+                nombre = f"{nombres_fake[i]}_{random.getrandbits(16)}{ext}"
+                fake_path = os.path.join(directorio_archivo, nombre)
+                
+                # Escribimos datos de tamaño variable para engañar algoritmos de detección
+                # 4KB a 16KB fuerza la asignación de múltiples clusters
+                with open(fake_path, "wb") as f: 
+                    f.write(os.urandom(random.randint(4096, 16384))) 
+                
+                # APLICAMOS TIMESTOMP: Cambiamos la fecha del archivo basura antes de borrarlo
+                # Esto ensucia la línea de tiempo del "USN Journal" con fechas antiguas
+                handle = ctypes.windll.kernel32.CreateFileW(fake_path, 0x0100, 0, None, 3, 0, None)
+                if handle != -1:
+                    ctypes.windll.kernel32.SetFileTime(handle, ctypes.byref(ft_ctypes), 
+                                                     ctypes.byref(ft_ctypes), ctypes.byref(ft_ctypes))
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                
+                time.sleep(0.05)
+                os.remove(fake_path)
             
-            # Escribimos 4KB de basura (el tamaño estándar de un cluster NTFS)
-            # Esto obliga a la MFT a asignar y desasignar espacio real.
-            with open(fake_path, "wb") as f: 
-                f.write(os.urandom(4096)) 
-            
-            # Pequeña pausa para que el sistema de archivos respire
-            time.sleep(0.1)
-            os.remove(fake_path)
-            
-        logger("→ MFT Journal: Activity masked (Surgical Overwrite).")
+        logger("→ MFT Journal: Records unlinked and overwritten (Surgical Masking).")
+        
     except Exception as e:
         logger(f"→ MFT Warning: {e}")
     
@@ -733,39 +791,186 @@ def limpiar_icon_cache(logger):
             subprocess.run(f'del /f /q "{path}\\iconcache*"', shell=True, capture_output=True)
             logger("→ IconCache: Attempted safe cleanup.")
     except: pass
+    
+def limpiar_historial_descarga_internet(ruta_archivo, logger):
+    """
+    Localiza y elimina el rastro de descarga en navegadores (Chrome, Edge, Brave)
+    y neutraliza el rastro de Zone.Identifier.
+    """
+    nombre_archivo = os.path.basename(ruta_archivo)
+    
+    # 1. Neutralizar Zone.Identifier (Rastro de "Descargado de Internet")
+    try:
+        # El comando 'Unblock-File' elimina el stream alternativo que marca el origen
+        subprocess.run(["powershell", "-Command", f"Unblock-File -Path '{ruta_archivo}'"], capture_output=True)
+        logger(f"→ Zone.Identifier neutralized for {nombre_archivo}.")
+    except: pass
+
+    # 2. Limpieza de base de datos de Navegadores (Downloads & History)
+    user_profile = os.environ['USERPROFILE']
+    rutas_db = [
+        os.path.join(user_profile, r"AppData\Local\Google\Chrome\User Data\Default\History"),
+        os.path.join(user_profile, r"AppData\Local\Microsoft\Edge\User Data\Default\History"),
+        os.path.join(user_profile, r"AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\History")
+    ]
+
+    for db_path in rutas_db:
+        if not os.path.exists(db_path):
+            continue
+            
+        try:
+            # Copiamos la DB a temporal para evitar errores si el navegador está abierto
+            temp_db = os.path.join(os.environ['TEMP'], "temp_hist")
+            shutil.copy2(db_path, temp_db)
+            
+            conn = sqlite3.connect(temp_db)
+            cursor = conn.cursor()
+
+            # Buscamos la URL asociada a la descarga antes de borrarla
+            cursor.execute("SELECT id FROM downloads WHERE target_path LIKE ?", (f'%{nombre_archivo}%',))
+            download_ids = cursor.fetchall()
+
+            if download_ids:
+                for d_id in download_ids:
+                    # Borramos de la tabla de descargas
+                    cursor.execute("DELETE FROM downloads WHERE id = ?", (d_id[0],))
+                    # Borramos la cadena de URLs asociada
+                    cursor.execute("DELETE FROM downloads_url_chains WHERE id = ?", (d_id[0],))
+                
+                conn.commit()
+                conn.close()
+                
+                # Devolvemos la DB limpia al navegador
+                shutil.copy2(temp_db, db_path)
+                os.remove(temp_db)
+                logger(f"→ Browser Download History sanitized in: {os.path.basename(os.path.dirname(os.path.dirname(db_path)))}")
+            else:
+                conn.close()
+                os.remove(temp_db)
+
+        except Exception as e:
+            logger(f"→ Browser DB Skip (In use or locked).")
+            
+def deep_registry_search_cleaner(ruta_archivo, logger):
+    """
+    DEEP SCAN: Búsqueda recursiva (fuerza bruta) en las colmenas principales del registro.
+    Busca claves y valores que contengan el nombre del archivo.
+    ADVERTENCIA: Es lento, puede tardar entre 10 y 40 segundos.
+    """
+    nombre_target = os.path.basename(ruta_archivo).lower()
+    nombre_sin_ext = os.path.splitext(nombre_target)[0].lower()
+    
+    logger(f"→ DEEP SCAN: Scanning registry hives for '{nombre_target}'... (This may take a while)")
+
+    # Definimos las raíces donde suelen esconderse los programas
+    roots = [
+        (winreg.HKEY_CURRENT_USER, r"Software"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services")
+    ]
+
+    found_count = 0
+
+    def buscar_recursivo(hkey, path):
+        nonlocal found_count
+        try:
+            with winreg.OpenKey(hkey, path, 0, winreg.KEY_ALL_ACCESS) as key:
+                # 1. Revisar Valores
+                num_vals = winreg.QueryInfoKey(key)[1]
+                for i in range(num_vals):
+                    try:
+                        v_name, v_data, _ = winreg.EnumValue(key, i)
+                        # Comprobar si el nombre del valor o su contenido tienen el target
+                        if (nombre_target in v_name.lower() or 
+                            nombre_sin_ext in v_name.lower() or 
+                            nombre_target in str(v_data).lower()):
+                            
+                            winreg.DeleteValue(key, v_name)
+                            found_count += 1
+                            # CORRECCIÓN: Extraer el nombre de la clave a una variable
+                            nombre_clave = path.split('\\')[-1]
+                            logger(f"→ DeepClean: Value removed from ...\\{nombre_clave}")
+                    except: continue
+                
+                # 2. Revisar Subclaves (Recursión)
+                num_subkeys = winreg.QueryInfoKey(key)[0]
+                # Iteramos al revés para poder borrar sin romper el índice
+                for i in range(num_subkeys - 1, -1, -1):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        subkey_full_path = f"{path}\\{subkey_name}"
+                        
+                        # Si el nombre de la carpeta (clave) es el archivo, se borra entera
+                        if nombre_target in subkey_name.lower() or nombre_sin_ext == subkey_name.lower():
+                            winreg.DeleteKey(hkey, subkey_full_path) # DeleteKey borra si no tiene hijos
+                            # Si tiene hijos, se necesita una función recursiva de borrado (shutil de registro)
+                            # Para simplificar, usamos reg delete comando forzado
+                            subprocess.run(f'reg delete "{getKeyName(hkey)}\\{subkey_full_path}" /f', shell=True, capture_output=True)
+                            found_count += 1
+                            logger(f"→ DeepClean: Key removed {subkey_name}")
+                        else:
+                            # Si no coincide, entramos a buscar dentro (RECURSIÓN)
+                            buscar_recursivo(hkey, subkey_full_path)
+                    except: continue
+        except: pass
+
+    def getKeyName(hkey):
+        if hkey == winreg.HKEY_LOCAL_MACHINE: return "HKLM"
+        if hkey == winreg.HKEY_CURRENT_USER: return "HKCU"
+        return "HKLM"
+
+    # Ejecución del escaneo
+    for root_hkey, root_path in roots:
+        buscar_recursivo(root_hkey, root_path)
+
+    if found_count > 0:
+        logger(f"→ DEEP SCAN COMPLETE: {found_count} hidden traces eliminated.")
+    else:
+        logger("→ DEEP SCAN COMPLETE: No deep traces found.")
         
 # ==========================================================
 # EJECUCIÓN MAESTRA
 # ==========================================================
 
 def deep_clean_process(target_path, log_func):
-    """Pipeline de limpieza absoluta para el archivo objetivo."""
+    """Pipeline de limpieza absoluta para el archivo objetivo (Nivel Elite - Ghost Protocol)."""
     log_func(f"--- INITIATING GHOST PROTOCOL FOR: {os.path.basename(target_path)} ---")
     
-    # 1. Hardware y Red
+    # 1. ORIGEN Y RED: Elimina la vinculación con la web antes de tocar el sistema
+    limpiar_historial_descarga_internet(target_path, log_func) # Borra URL de descarga y Zone.Identifier
+    flush_dns_y_arp(log_func) # Limpia caché de red
+    
+    # 2. HARDWARE Y UNIDADES: Limpia rastros de dispositivos externos
     limpiar_mountpoints(target_path, log_func)
     limpiar_papelera_usb(target_path, log_func)
-    flush_dns_y_arp(log_func)
     
-    # 2. Interfaz y LNK
+    # 3. PERSISTENCIA DE USUARIO: Limpia rastro de carpetas y diálogos de Windows
     limpiar_lnk_recientes(target_path, log_func)
     limpiar_jump_lists_especificas(log_func)
     limpiar_shellbags_selectivo(log_func)
+    limpiar_shell_experience(log_func) # Limpia Win+R y búsquedas del explorador
     
-    # 3. Registro y Kernel
-    limpiar_registro_selectivo(target_path, log_func)
-    limpiar_shimcache_especifico(log_func)
+    # 4. REGISTRO Y TELEMETRÍA: El núcleo del sigilo
+    limpiar_userassist_selectivo(target_path, log_func) # Purga rastro de ejecución ROT13
+    limpiar_recent_apps_selectivo(target_path, log_func)
+    limpiar_appcompat_total(target_path, log_func) # Versión quirúrgica (Ruta + Nombre)
+    limpiar_amcache_quirurgico(target_path, log_func) # Elimina inventario de aplicaciones
+    limpiar_muicache_admin(target_path, log_func)
     
-    # 4. Preparación de "Cuerpo" (ADS y Tiempo)
+    # 5. MANIPULACIÓN DE MFT Y DESTRUCCIÓN: Borrado físico y de nombres
+    # Importante: Camuflar MFT se hace en la carpeta del archivo para sobreescribir su slot
     limpiar_ads_archivo(target_path, log_func)
-    time_stomp_archivo(target_path, log_func)
+    time_stomp_archivo(target_path, log_func) # MAC timestamps a 2015
+    camuflar_mft(os.path.dirname(target_path), log_func) # Sobreescritura de registros MFT
+    shred_y_destruir(target_path, log_func) # Sobreescritura física con datos aleatorios
     
-    # 5. Destrucción
-    shred_y_destruir(target_path, log_func)
-    
-    # 6. Borrado de rastro de la herramienta
-    deep_wipe_usn_journal(log_func)
-    limpiar_event_logs_creacion(log_func)
+    # 6. AUTO-LIMPIEZA FINAL: Borra el rastro de la propia limpieza
+    # Este orden es crítico para no dejar rastros de CMD, WEVTUTIL o FSUTIL
+    limpiar_everything_service(log_func) # Limpia la DB de Everything si existe
+    limpiar_icon_cache(log_func)
+    limpiar_historial_consola(log_func) # Borra comandos y Host Prefetch (rastros de .exe de sistema)
+    deep_wipe_usn_journal(log_func) # Reset final del diario NTFS
+    limpiar_event_logs_creacion(log_func) # Limpia logs de seguridad y sistema
     
     log_func("--- CLEANING COMPLETE: NO TRACES DETECTED ---")
 
@@ -792,3 +997,72 @@ def db_update_membership(username, nueva_membresia):
         return response.status_code == 200, "Plan actualizado"
     except:
         return False, "Error de comunicación"
+    
+def ejecutar_autodestruccion_exe(logger):
+    """
+    PROTOCOLO KAMIKAZE:
+    1. El bypass limpia sus propios rastros en el Registro (BAM, UserAssist, MuiCache).
+    2. Genera un .bat que espera al cierre del proceso.
+    3. El .bat borra el .exe, su rastro en Prefetch (creado al cerrar) y a sí mismo.
+    """
+    try:
+        # 1. Identificar quiénes somos (Ruta del propio ejecutable)
+        if getattr(sys, 'frozen', False):
+            yo_mismo = sys.executable
+        else:
+            yo_mismo = os.path.abspath(sys.argv[0])
+            
+        nombre_exe = os.path.basename(yo_mismo)
+        nombre_sin_ext = os.path.splitext(nombre_exe)[0]
+        
+        logger("→ SELF-DESTRUCT: Purging own execution traces from Registry...")
+
+        # 2. AUTO-LIMPIEZA DE REGISTRO (Usamos tus propias funciones contra ti mismo)
+        # Esto borra que "Scanneler.exe" fue ejecutado hoy.
+        try:
+            # Limpiamos rastro en BAM, UserAssist y MuiCache
+            limpiar_rastros_globales_nombre(yo_mismo, logger)
+            # Limpiamos rastro en RecentApps
+            limpiar_recent_apps_selectivo(yo_mismo, logger)
+            # Limpiamos rastro en ShimCache/Amcache (Muy importante)
+            limpiar_appcompat_total(yo_mismo, logger)
+            limpiar_amcache_quirurgico(yo_mismo, logger)
+        except Exception as e:
+            logger(f"→ Self-Clean Warning: {e}")
+
+        # 3. CREACIÓN DEL AGENTE DE LIMPIEZA EXTERNO (.BAT)
+        # El Prefetch se crea/actualiza al cerrar, así que el BAT debe borrarlo después.
+        nombre_bat = f"ghost_{random.randint(1000,9999)}.bat"
+        path_prefetch = os.path.expandvars(r'%SystemRoot%\Prefetch')
+        
+        # Script Batch optimizado
+        contenido_bat = f"""@echo off
+:: Esperar a que el proceso principal libere el archivo
+timeout /t 2 /nobreak > NUL
+
+:LOOP
+:: Intentar borrar el ejecutable del bypass
+del /F /Q "{yo_mismo}"
+if exist "{yo_mismo}" goto LOOP
+
+:: --- FASE CRÍTICA: BORRADO DE PREFETCH DEL PROPIO BYPASS ---
+:: Windows crea el .pf al cerrar la app, por eso lo borramos aquí.
+del /F /Q "{path_prefetch}\\{nombre_sin_ext.upper()}*.pf"
+
+:: Borrarse a sí mismo (El crimen perfecto)
+del "{nombre_bat}"
+"""
+        
+        with open(nombre_bat, "w") as f:
+            f.write(contenido_bat)
+            
+        logger("→ AGENT ARMED: Prefetch & Binary will be incinerated on exit.")
+        
+        # Ejecutamos el BAT de forma oculta (CREATE_NO_WINDOW)
+        subprocess.Popen(nombre_bat, shell=True, creationflags=0x08000000)
+        
+        return True
+
+    except Exception as e:
+        logger(f"→ Self-destruct error: {e}")
+        return False

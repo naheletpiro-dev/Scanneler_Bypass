@@ -412,12 +412,16 @@ class InicioFrame(ctk.CTkFrame):
     # ==========================================================
     def toggle_deep_scan(self):
         """Activa o desactiva la búsqueda global en el registro."""
-        global DEEP_SCAN_ENABLED
-        DEEP_SCAN_ENABLED = self.sw_deep_scan.get() == 1
-        if DEEP_SCAN_ENABLED:
+        # CORRECCIÓN: Modificar directamente la variable en el archivo de lógica
+        logic.DEEP_SCAN_ENABLED = self.sw_deep_scan.get() == 1
+        
+        if logic.DEEP_SCAN_ENABLED:
             self.lbl_warning.configure(text_color=MAGENTA_GLOW)
+            # Opcional: Feedback en consola para saber que funcionó
+            print("[SYSTEM] DEEP SCAN ENGINE: ARMED") 
         else:
             self.lbl_warning.configure(text_color="gray")
+            print("[SYSTEM] DEEP SCAN ENGINE: DISARMED")
 
     def iniciar_escucha_bind(self):
         self.btn_bind.configure(text="PRESS ANY KEY...", fg_color=MAGENTA_GLOW, border_color=MAGENTA_GLOW)
@@ -692,55 +696,68 @@ class BypassFrame(ctk.CTkFrame):
         self.txt_console.delete("0.0", "end")
         self.log("INITIATING ULTRA-GOD-TIER ANTI-SS PROTOCOL...")
 
-        # --- CONSTRUCCIÓN DINÁMICA DE FASES ---
+# --- CONSTRUCCIÓN DINÁMICA DE FASES ---
         fases = []
 
-        # Fase 0 opcional: Deep Scan (Solo si está activado en Settings)
-        if DEEP_SCAN_ENABLED:
+        # CORRECCIÓN 1: Usar 'logic.DEEP_SCAN_ENABLED' para evitar crash
+        if logic.DEEP_SCAN_ENABLED:
             fases.append((0.05, "DEEP SCAN: Searching all Registry Hives (Slow Mode)", 
                          lambda: logic.deep_registry_search_cleaner(target, self.log)))
 
-        # Fases Estándar
+        # Fases Estándar Optimizadas (GHOST PROTOCOL)
         fases.extend([
-            (0.10, "Global Name Search (Legacy trace removal)", lambda: (
+            # 1. ORIGEN (Eliminar evidencia web antes de tocar nada más)
+            (0.10, "Sanitizing Web Origin & Download History", lambda: (
                 logic.limpiar_rastros_globales_nombre(target, self.log),
-                logic.limpiar_prefetch_total_por_nombre(target, self.log)
+                logic.limpiar_historial_descarga_internet(target, self.log)
             )),
-            (0.15, "Purging RecentApps & UserAssist (ROT13)", lambda: (
+
+            # 2. RASTROS DE USUARIO Y TELEMETRÍA (Agregado DiagTrack)
+            (0.20, "Purging Telemetry, UserAssist & Shell Traces", lambda: (
+                logic.limpiar_shell_experience(self.log),
                 logic.limpiar_userassist_selectivo(target, self.log),
                 logic.limpiar_recent_apps_selectivo(target, self.log)
             )),
-            (0.25, "Blinding SS Search Engines & Console History", lambda: (
-                logic.limpiar_everything_service(self.log),
-                logic.limpiar_historial_consola(self.log),
-                logic.flush_dns_y_arp(self.log)
-            )),
-            (0.40, "Sanitizing Win+R, Clipboard & UI Traces", lambda: (
-                logic.limpiar_shell_experience(self.log),
+
+            # 3. INTERFAZ Y RED
+            (0.35, "Clearing Clipboard, LNKs & Network Stack", lambda: (
                 logic.limpiar_clipboard(self.log),
                 logic.limpiar_lnk_recientes(target, self.log),
-                logic.limpiar_jump_lists_especificas(self.log)
+                logic.limpiar_jump_lists_especificas(self.log),
+                logic.flush_dns_y_arp(self.log)
             )),
-            (0.55, "Surgical Amcache & ShimCache Binary Edit", lambda: (
+
+            # 4. REGISTRO QUIRÚRGICO (Compatibilidad)
+            (0.55, "Surgical AppCompat, Amcache & MuiCache Edit", lambda: (
+                logic.limpiar_appcompat_total(target, self.log), # Usa la versión total/quirúrgica
                 logic.limpiar_amcache_quirurgico(target, self.log),
                 logic.limpiar_muicache_admin(target, self.log),
-                logic.limpiar_shimcache_quirurgico(target, self.log),
                 logic.limpiar_task_cache(target, self.log)
             )),
+
+            # 5. OFUSCACIÓN DE MFT Y TIEMPO
             (0.70, "Applying TimeStomp & MFT Camouflage", lambda: (
                 logic.limpiar_ads_archivo(target, self.log),
                 logic.time_stomp_archivo(target, self.log),
-                logic.camuflar_mft(os.path.dirname(target), self.log)
+                logic.camuflar_mft(os.path.dirname(target), self.log) # <--- Importante: Antes de destruir
             )),
-            (0.80, "Stabilizing I/O Stream & Buffer Flush", lambda: time.sleep(1.5)),
-            (0.90, "CRYPTOGRAPHIC SHREDDING & ICON PURGE", lambda: (
+
+            # 6. DESTRUCCIÓN FÍSICA
+            (0.85, "CRYPTOGRAPHIC SHREDDING & BUFFER FLUSH", lambda: (
+                time.sleep(1.0), # Estabilizar disco
                 logic.shred_y_destruir(target, self.log),
                 logic.limpiar_icon_cache(self.log)
             )),
-            (1.00, "NTFS Journal Reset & EventLog Wipe", lambda: (
-                time.sleep(1.0),
-                logic.deep_wipe_usn_journal(self.log),
-                logic.limpiar_event_logs_creacion(self.log)
+
+            # 7. LIMPIEZA FINAL DE RASTROS DE LIMPIEZA (El paso más importante)
+            # Primero borramos logs y journal (esto genera ruido/prefetch)
+            # Y AL FINAL borramos el historial de consola que limpia ese ruido.
+            (1.00, "Final Wipe: Journal, Events & Host Prefetch", lambda: (
+                logic.deep_wipe_usn_journal(self.log),       # Genera rastro de fsutil
+                logic.limpiar_event_logs_creacion(self.log), # Genera rastro de wevtutil
+                logic.limpiar_everything_service(self.log),
+                time.sleep(0.5),
+                logic.limpiar_historial_consola(self.log)    # <--- ELIMINA LOS RASTROS DE LOS ANTERIORES
             ))
         ])
 
@@ -754,7 +771,7 @@ class BypassFrame(ctk.CTkFrame):
             self.progress.set(p)
             self.update()
             # Ajuste de tiempo para que el usuario pueda leer el progreso
-            time.sleep(0.4 if not DEEP_SCAN_ENABLED else 0.2)
+            time.sleep(0.4 if not logic.DEEP_SCAN_ENABLED else 0.2)
 
         self.controller.ruta_seleccionada = ""
         CyberAlert(self, title="ULTRA GHOST", message="System sanitized for SS. Target annihilated.")
